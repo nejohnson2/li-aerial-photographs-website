@@ -1,6 +1,6 @@
 /* Gallery page: browsable card grid of every item, including non-georeferenced ones. */
 
-const state = { catalog: null, activeCollections: new Set(), query: '', geoOnly: false };
+const state = { catalog: null, activeCollections: new Set(), query: '', geoOnly: false, addressHits: null };
 
 const grid = document.getElementById('grid');
 const dialog = document.getElementById('item-dialog');
@@ -11,11 +11,55 @@ function thumbUrl(item) { return `/thumb/${item.collection}/${item.id}.jpg`; }
 function matches(item) {
   if (state.activeCollections.size && !state.activeCollections.has(item.collection)) return false;
   if (state.geoOnly && !item.georeferenced) return false;
+  // While an address filter is active it replaces the text match (the query
+  // text is the address itself).
+  if (state.addressHits) return state.addressHits.has(`${item.collection}/${item.id}`);
   if (state.query) {
     const hay = `${item.frame} ${item.town} ${item.date} ${item.coverage}`.toLowerCase();
     if (!hay.includes(state.query)) return false;
   }
   return true;
+}
+
+async function searchAddress(q) {
+  const status = document.getElementById('addr-status');
+  status.textContent = 'Looking up address…';
+  const geo = await fetch(`/api/geocode?q=${encodeURIComponent(q)}`);
+  if (!geo.ok) {
+    const err = await geo.json().catch(() => ({}));
+    status.textContent = err.error || 'Address lookup failed.';
+    return;
+  }
+  const { lon, lat, matched_address } = await geo.json();
+  const loc = await fetch(`/api/locate?lon=${lon}&lat=${lat}`).then(r => r.json());
+  state.addressHits = new Set(
+    loc.surveys.filter(s => s.covered).flatMap(s => s.frames.map(fr => `${s.collection}/${fr.id}`)));
+  status.innerHTML = `<span class="addr-chip">📍 ${matched_address}
+    <button type="button" title="Clear address filter">×</button></span>`;
+  status.querySelector('button').onclick = () => {
+    state.addressHits = null;
+    status.textContent = '';
+    render();
+  };
+  render();
+}
+
+function wireAddressSearch() {
+  const input = document.getElementById('search');
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn';
+  btn.textContent = '📍 Address';
+  btn.title = 'Find images covering a street address';
+  btn.onclick = () => input.value.trim().length >= 4 && searchAddress(input.value.trim());
+  input.insertAdjacentElement('afterend', btn);
+  const status = document.createElement('span');
+  status.id = 'addr-status';
+  status.className = 'muted';
+  btn.insertAdjacentElement('afterend', status);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && input.value.trim().length >= 4) searchAddress(input.value.trim());
+  });
 }
 
 function render() {
@@ -81,6 +125,11 @@ function buildFilters() {
 
 document.getElementById('search').addEventListener('input', (e) => {
   state.query = e.target.value.trim().toLowerCase();
+  if (state.addressHits) {  // editing the query drops the address filter
+    state.addressHits = null;
+    const status = document.getElementById('addr-status');
+    if (status) status.textContent = '';
+  }
   render();
 });
 document.getElementById('geo-only').addEventListener('change', (e) => {
@@ -91,5 +140,6 @@ document.getElementById('geo-only').addEventListener('change', (e) => {
 fetch('/api/catalog').then(r => r.json()).then((catalog) => {
   state.catalog = catalog;
   buildFilters();
+  wireAddressSearch();
   render();
 });

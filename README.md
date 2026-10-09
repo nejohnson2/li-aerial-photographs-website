@@ -18,6 +18,16 @@ aerial photography collection (1938–1970). Local Flask proof of concept.
   collections, then export a link manifest (`.txt`) or a `curl` fetch script
   (`.sh`) pointing at the SBU Academic Commons native-resolution downloads.
   No imagery is redistributed by this server.
+- **Address search** (map and gallery): type a street address (e.g.
+  `120 Main St, Bay Shore`) and the site geocodes it via the free US Census
+  geocoder (no API key; results cached in `data/geocode_cache.json`, biased to
+  a Long Island bounding box) and finds every survey whose imagery actually
+  covers that point — confirmed by sampling the mosaic pixel, not just frame
+  bounding boxes. The map drops a marker, enables the covering surveys, and
+  lists frames by year ("this location through time"); the gallery filters its
+  grid to the covering frames. Note: the Census geocoder resolves street
+  addresses, not bare place names — town names are handled by the regular
+  text search.
 
 ## Data
 

@@ -81,33 +81,41 @@ function renderLayerList() {
   }
   ul.addEventListener('change', (e) => {
     const cid = e.target.dataset.cid;
-    if (!cid) return;
-    // Imagery and its invisible click targets toggle together.
-    if (e.target.checked) {
-      state.tileLayers[cid].addTo(map);
-      state.footprintLayers[cid].addTo(map);
-    } else {
-      map.removeLayer(state.tileLayers[cid]);
-      map.removeLayer(state.footprintLayers[cid]);
-    }
+    if (cid) setCollectionVisible(cid, e.target.checked);
   });
+}
+
+// Imagery and its invisible click targets toggle together; the sidebar
+// checkbox is kept in sync for programmatic calls.
+function setCollectionVisible(cid, on) {
+  if (!state.tileLayers[cid]) return;
+  if (on) {
+    state.tileLayers[cid].addTo(map);
+    state.footprintLayers[cid].addTo(map);
+  } else {
+    map.removeLayer(state.tileLayers[cid]);
+    map.removeLayer(state.footprintLayers[cid]);
+  }
+  const box = document.querySelector(`#layer-list input[data-cid="${cid}"]`);
+  if (box) box.checked = on;
 }
 
 opacitySlider.addEventListener('input', () => {
   for (const tl of Object.values(state.tileLayers)) tl.setOpacity(opacitySlider.value / 100);
 });
 
-/* search: match frame / town / date across georeferenced items, fly to result */
+/* search: frame / town / date matches, plus address lookup via /api/geocode */
 const searchBox = document.getElementById('search');
 const resultsEl = document.getElementById('search-results');
 searchBox.addEventListener('input', () => {
-  const q = searchBox.value.trim().toLowerCase();
+  const q = searchBox.value.trim();
   resultsEl.innerHTML = '';
   if (q.length < 2) return;
+  const ql = q.toLowerCase();
   const hits = [...state.items.values()]
     .filter(it => it.georeferenced &&
-      (`${it.frame} ${it.town} ${it.date} ${it.coverage}`.toLowerCase().includes(q)))
-    .slice(0, 20);
+      (`${it.frame} ${it.town} ${it.date} ${it.coverage}`.toLowerCase().includes(ql)))
+    .slice(0, 12);
   for (const it of hits) {
     const div = document.createElement('div');
     div.className = 'search-result';
@@ -115,7 +123,60 @@ searchBox.addEventListener('input', () => {
     div.onclick = () => flyToItem(it);
     resultsEl.appendChild(div);
   }
+  if (q.length >= 4) {
+    const div = document.createElement('div');
+    div.className = 'search-result addr-row';
+    div.innerHTML = `📍 Search “<strong>${q}</strong>” as a street address`;
+    div.onclick = () => searchAddress(q);
+    resultsEl.appendChild(div);
+  }
 });
+searchBox.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && searchBox.value.trim().length >= 4) searchAddress(searchBox.value.trim());
+});
+
+async function searchAddress(q) {
+  resultsEl.innerHTML = '<div class="muted">Looking up address…</div>';
+  const geo = await fetch(`/api/geocode?q=${encodeURIComponent(q)}`);
+  if (!geo.ok) {
+    const err = await geo.json().catch(() => ({}));
+    resultsEl.innerHTML = `<div class="muted">${err.error || 'Address lookup failed.'}</div>`;
+    return;
+  }
+  const { lon, lat, matched_address } = await geo.json();
+
+  if (state.addressMarker) map.removeLayer(state.addressMarker);
+  state.addressMarker = L.marker([lat, lon]).addTo(map).bindPopup(matched_address);
+  map.setView([lat, lon], 15);
+
+  const loc = await fetch(`/api/locate?lon=${lon}&lat=${lat}`).then(r => r.json());
+  const covered = loc.surveys.filter(s => s.covered);
+
+  // "this location through time": enable every survey that covers the address
+  for (const s of covered) setCollectionVisible(s.collection, true);
+
+  resultsEl.innerHTML = `<div class="addr-matched">📍 ${matched_address}</div>`;
+  if (!covered.length) {
+    resultsEl.innerHTML += '<div class="muted">No survey imagery covers this address.</div>';
+    return;
+  }
+  for (const s of covered) {
+    const group = document.createElement('div');
+    group.className = 'survey-group';
+    group.innerHTML = `<div class="survey-group-title">
+        <span class="dot" style="background:${state.catalog.collections[s.collection].color}"></span>
+        ${s.year} — ${s.name}</div>`;
+    for (const fr of s.frames) {
+      const item = state.items.get(`${s.collection}/${fr.id}`);
+      const row = document.createElement('div');
+      row.className = 'search-result';
+      row.innerHTML = `<strong>${fr.frame}</strong><span class="muted">frame center ${(fr.distance_m / 1000).toFixed(1)} km away</span>`;
+      row.onclick = () => flyToItem(item);
+      group.appendChild(row);
+    }
+    resultsEl.appendChild(group);
+  }
+}
 
 function flyToItem(item) {
   const layerGroup = state.footprintLayers[item.collection];
@@ -154,18 +215,7 @@ async function init() {
 }
 
 function showOnlyCollection(keep) {
-  for (const cid of Object.keys(state.footprintLayers)) {
-    const on = cid === keep;
-    if (on) {
-      state.tileLayers[cid].addTo(map);
-      state.footprintLayers[cid].addTo(map);
-    } else {
-      map.removeLayer(state.tileLayers[cid]);
-      map.removeLayer(state.footprintLayers[cid]);
-    }
-    const box = document.querySelector(`#layer-list input[data-cid="${cid}"]`);
-    if (box) box.checked = on;
-  }
+  for (const cid of Object.keys(state.footprintLayers)) setCollectionVisible(cid, cid === keep);
 }
 
 init();

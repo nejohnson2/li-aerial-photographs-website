@@ -2,6 +2,8 @@
 
 Pages:   / (map)   /gallery   /downloads
 API:     /api/catalog  /api/footprints
+         /api/geocode?q=<address>   — address -> coordinate (US Census, cached)
+         /api/locate?lon=&lat=      — coordinate -> covering frames per survey
 Tiles:   /tiles/<collection>/<z>/<x>/<y>.png  — dynamic XYZ tiles rendered
          from each survey's VRT mosaic with rio-tiler (no pre-generation).
 Images:  /thumb/<collection>/<item_id>.jpg    — cached thumbnails
@@ -9,8 +11,11 @@ Images:  /thumb/<collection>/<item_id>.jpg    — cached thumbnails
 
 import json
 import logging
+import math
 import os
 import threading
+import urllib.parse
+import urllib.request
 from io import BytesIO
 
 # GDAL tuning for tile serving from slow external storage — must be set before
@@ -21,12 +26,15 @@ from io import BytesIO
 os.environ.setdefault("GDAL_CACHEMAX", "512")
 os.environ.setdefault("GDAL_MAX_DATASET_POOL_SIZE", "2000")
 
-from flask import Flask, abort, jsonify, render_template, send_file, send_from_directory
+import rasterio
+from flask import Flask, abort, jsonify, render_template, request, send_file, send_from_directory
+from rasterio.warp import transform as warp_transform
+from rasterio.windows import Window
 from rio_tiler.errors import TileOutsideBounds
 from rio_tiler.io import Reader
 
 from config import (
-    CATALOG_PATH, COLLECTIONS, FOOTPRINTS_PATH, MOSAIC_CACHE, PORT, THUMB_DIR, TILE_CACHE,
+    CATALOG_PATH, COLLECTIONS, DATA_DIR, FOOTPRINTS_PATH, MOSAIC_CACHE, PORT, THUMB_DIR, TILE_CACHE,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
@@ -80,6 +88,139 @@ def thumb(collection, item_id):
     return send_from_directory(THUMB_DIR, f"{collection}_{item_id}.jpg", max_age=86400)
 
 
+# --- address search ----------------------------------------------------------
+
+# Long Island bounding box: geocode hits outside it are rejected so "Main St"
+# resolves to Long Island, not Manhattan or Albany.
+LI_BBOX = (-74.05, 40.5, -71.7, 41.3)  # w, s, e, n
+GEOCODE_CACHE_PATH = DATA_DIR / "geocode_cache.json"
+CENSUS_URL = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress"
+
+_geocode_lock = threading.Lock()
+_geocode_cache = None
+
+
+def _load_geocode_cache():
+    global _geocode_cache
+    if _geocode_cache is None:
+        _geocode_cache = json.loads(GEOCODE_CACHE_PATH.read_text()) if GEOCODE_CACHE_PATH.exists() else {}
+    return _geocode_cache
+
+
+def census_geocode(query):
+    """Resolve an address via the US Census geocoder; returns dict or None."""
+    q = query.strip()
+    if "ny" not in q.lower() and "new york" not in q.lower():
+        q += ", NY"
+    url = CENSUS_URL + "?" + urllib.parse.urlencode(
+        {"address": q, "benchmark": "Public_AR_Current", "format": "json"})
+    req = urllib.request.Request(url, headers={"User-Agent": "li-aerial-photographs-website"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.load(resp)
+    w, s, e, n = LI_BBOX
+    for m in data.get("result", {}).get("addressMatches", []):
+        lon, lat = m["coordinates"]["x"], m["coordinates"]["y"]
+        if w <= lon <= e and s <= lat <= n:
+            return {"lon": lon, "lat": lat, "matched_address": m.get("matchedAddress", q)}
+    return None
+
+
+@app.route("/api/geocode")
+def api_geocode():
+    query = request.args.get("q", "").strip()
+    if not query:
+        abort(400, "missing q parameter")
+    key = query.lower()
+    with _geocode_lock:
+        cache = _load_geocode_cache()
+        if key in cache:
+            return jsonify(cache[key]) if cache[key] else (jsonify({"error": "no match on Long Island"}), 404)
+    try:
+        result = census_geocode(query)
+    except Exception as exc:
+        log.warning("geocode failed for %r: %s", query, exc)
+        return jsonify({"error": "geocoding service unavailable"}), 502
+    with _geocode_lock:
+        cache[key] = result
+        DATA_DIR.mkdir(exist_ok=True)
+        GEOCODE_CACHE_PATH.write_text(json.dumps(cache))
+    if result is None:
+        return jsonify({"error": "no match on Long Island"}), 404
+    return jsonify(result)
+
+
+def _mosaic_covers(collection, lon, lat):
+    """True if the survey mosaic has real imagery at (lon, lat).
+
+    Uses a decimated window read so the answer comes from the local overview
+    files (~2-5 m precision) — no access to the source drive required.
+    """
+    with rasterio.open(mosaic_path(collection)) as src:
+        xs, ys = warp_transform("EPSG:4326", src.crs, [lon], [lat])
+        row, col = src.index(xs[0], ys[0])
+        if not (0 <= row < src.height and 0 <= col < src.width):
+            return False
+        win = Window(col - 4, row - 4, 8, 8)
+        data = src.read(1, window=win, out_shape=(1, 1), boundless=True)
+        return bool(data[0, 0] != 0)
+
+
+_footprints = None
+
+
+def _load_footprints():
+    global _footprints
+    if _footprints is None:
+        _footprints = json.loads(FOOTPRINTS_PATH.read_text())["features"]
+    return _footprints
+
+
+@app.route("/api/locate")
+def api_locate():
+    try:
+        lon = float(request.args.get("lon", ""))
+        lat = float(request.args.get("lat", ""))
+    except ValueError:
+        abort(400, "lon and lat are required")
+
+    # bbox prefilter, grouped by survey
+    candidates = {}
+    for f in _load_footprints():
+        c = f["geometry"]["coordinates"][0]
+        w, s = c[0]
+        e, n = c[2]
+        if w <= lon <= e and s <= lat <= n:
+            cx, cy = (w + e) / 2, (s + n) / 2
+            dist_m = math.hypot((lon - cx) * 85000 * math.cos(math.radians(lat)), (lat - cy) * 111000)
+            candidates.setdefault(f["properties"]["collection"], []).append({
+                "id": f["properties"]["id"],
+                "frame": f["properties"]["frame"],
+                "distance_m": round(dist_m),
+            })
+
+    surveys = []
+    for cid, frames in candidates.items():
+        try:
+            covered = _mosaic_covers(cid, lon, lat)
+        except Exception:
+            log.exception("coverage check failed for %s", cid)
+            covered = True  # fall back to the bbox answer rather than hiding frames
+        frames.sort(key=lambda fr: fr["distance_m"])
+        surveys.append({
+            "collection": cid,
+            "name": COLLECTIONS[cid]["name"],
+            "year": COLLECTIONS[cid]["year"],
+            "covered": covered,
+            "frames": frames,
+        })
+    def year_key(s):
+        digits = "".join(ch for ch in s["year"] if ch.isdigit())
+        return int(digits[:4]) if digits else 9999
+
+    surveys.sort(key=year_key)
+    return jsonify({"lon": lon, "lat": lat, "surveys": surveys})
+
+
 # --- dynamic tiles -----------------------------------------------------------
 
 # 1x1 transparent PNG for tiles outside a mosaic's bounds
@@ -101,17 +242,37 @@ def mosaic_path(collection):
 _render_slots = threading.BoundedSemaphore(8)
 
 
-def render_tile(collection, z, x, y):
-    """Render a tile; returns (png_bytes, has_imagery).
+_fallback_warned = set()
 
-    Fully-masked tiles are never disk-cached: they're cheap to re-render, and a
-    blank produced while an overview file is being rebuilt must not be stored
-    permanently.
+
+def render_tile(collection, z, x, y):
+    """Render a tile; returns (png_bytes, has_imagery, full_quality).
+
+    Deep-zoom tiles need base-resolution pixels from the data volume. If that
+    read fails (drive unplugged), retry at smaller tile sizes: the coarser
+    read resolves from the local .ovr overviews, and the browser stretches the
+    smaller PNG across the tile — soft, but the imagery never disappears.
+
+    Fully-masked and fallback tiles are never disk-cached, so full-quality
+    tiles get rendered and cached once the volume is back.
     """
     vrt = mosaic_path(collection)
-    with _render_slots, Reader(vrt) as src:
-        tile = src.tile(x, y, z, tilesize=256)
-    return tile.render(img_format="PNG"), bool(tile.mask.any())
+    last_exc = None
+    with _render_slots:
+        for tilesize in (256, 128, 64, 32):
+            try:
+                with Reader(vrt) as src:
+                    tile = src.tile(x, y, z, tilesize=tilesize)
+                if tilesize != 256 and collection not in _fallback_warned:
+                    _fallback_warned.add(collection)
+                    log.warning("%s: base rasters unreachable (data drive unplugged?) — "
+                                "serving upscaled overview tiles", collection)
+                return tile.render(img_format="PNG"), bool(tile.mask.any()), tilesize == 256
+            except TileOutsideBounds:
+                raise
+            except Exception as exc:
+                last_exc = exc
+    raise last_exc
 
 
 @app.route("/tiles/<collection>/<int:z>/<int:x>/<int:y>.png")
@@ -128,7 +289,8 @@ def tiles(collection, z, x, y):
 
     cacheable = False
     try:
-        png, cacheable = render_tile(collection, z, x, y)
+        png, has_imagery, full_quality = render_tile(collection, z, x, y)
+        cacheable = has_imagery and full_quality
     except TileOutsideBounds:
         png = _EMPTY_PNG
     except Exception:
@@ -142,7 +304,9 @@ def tiles(collection, z, x, y):
         tmp.replace(cache_path)  # atomic, safe under concurrent requests
 
     resp = send_file(BytesIO(png), mimetype="image/png")
-    resp.cache_control.max_age = 3600
+    # Fallback/empty tiles get a short browser cache so full-quality versions
+    # replace them quickly once the data volume is back.
+    resp.cache_control.max_age = 3600 if cacheable else 60
     return resp
 
 
