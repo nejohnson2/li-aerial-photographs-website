@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Long Island Aerial Photography{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">LI</span>
+      <div>
+        <h1>Long Island Aerial Photography</h1>
+        <p class="subtitle">Stony Brook University · 1938–1970 historical surveys</p>
+      </div>
+    </div>
+    <nav>
+      <a href="/" class="{{ 'active' if active == 'map' }}">Map</a>
+      <a href="/gallery" class="{{ 'active' if active == 'gallery' }}">Gallery</a>
+      <a href="/downloads" class="{{ 'active' if active == 'downloads' }}">Downloads</a>
+    </nav>
+  </header>
+  <main class="{% block mainclass %}{% endblock %}">
+    {% block content %}{% endblock %}
+  </main>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Map · Long Island Aerial Photography{% endblock %}
+{% block mainclass %}map-main{% endblock %}
+{% block head %}
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+{% endblock %}
+
+{% block content %}
+<aside class="map-sidebar">
+  <div class="sidebar-section">
+    <input id="search" type="search" placeholder="Search frame, town, date…" autocomplete="off">
+  </div>
+  <div class="sidebar-section">
+    <h2>Surveys</h2>
+    <ul id="layer-list" class="layer-list"></ul>
+  </div>
+  <div class="sidebar-section">
+    <h2>Imagery opacity</h2>
+    <input id="opacity" type="range" min="0" max="100" value="80">
+  </div>
+  <div class="sidebar-section hint">
+    Click anywhere on the historical imagery to see that frame's photograph
+    and metadata. Toggle each survey with the layer switches.
+  </div>
+  <div id="search-results" class="search-results"></div>
+</aside>
+<div id="map"></div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="{{ url_for('static', filename='js/map.js') }}"></script>
+{% endblock %}

@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Downloads · Long Island Aerial Photography{% endblock %}
+{% block mainclass %}page-main{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2>Download images</h2>
+  <p class="muted">Select individual frames or whole collections. Downloads are served by
+     the SBU Academic Commons at native scan resolution.</p>
+</div>
+<div class="toolbar">
+  <input id="search" type="search" placeholder="Filter frame, town, date…" autocomplete="off">
+  <div id="collection-filters" class="chip-row"></div>
+</div>
+<div class="download-actions">
+  <span id="selection-count" class="muted">0 selected</span>
+  <button id="select-visible" class="btn">Select all shown</button>
+  <button id="clear-selection" class="btn">Clear</button>
+  <button id="dl-manifest" class="btn primary" disabled>Download link manifest (.txt)</button>
+  <button id="dl-script" class="btn primary" disabled>Download fetch script (.sh)</button>
+</div>
+<div class="table-wrap">
+  <table id="dl-table" class="dl-table">
+    <thead>
+      <tr><th></th><th>Frame</th><th>Collection</th><th>Date</th><th>Town / coverage</th><th>Geo</th><th>Links</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/downloads.js') }}"></script>
+{% endblock %}

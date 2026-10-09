@@ -1,0 +1,6 @@
+flask==3.0.3
+rasterio==1.4.3
+rio-tiler==7.4.0
+Pillow==11.1.0
+python-dotenv==1.0.1
+tqdm==4.67.1

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Gallery · Long Island Aerial Photography{% endblock %}
+{% block mainclass %}page-main{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2>Browse the collection</h2>
+  <p id="gallery-count" class="muted"></p>
+</div>
+<div class="toolbar">
+  <input id="search" type="search" placeholder="Search frame, town, date…" autocomplete="off">
+  <div id="collection-filters" class="chip-row"></div>
+  <label class="checkbox-label"><input type="checkbox" id="geo-only"> Georeferenced only</label>
+</div>
+<div id="grid" class="card-grid"></div>
+
+<dialog id="item-dialog">
+  <button class="dialog-close" onclick="this.closest('dialog').close()">×</button>
+  <div id="dialog-body"></div>
+</dialog>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/gallery.js') }}"></script>
+{% endblock %}
