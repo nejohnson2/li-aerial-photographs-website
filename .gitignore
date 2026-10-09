@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.env
+
+# Local session notes
+STATUS.md
+
+# Generated artifacts (rebuild with `make catalog thumbnails`)
+data/
+cache/
+
+# Never commit imagery
+*.tif
+*.tiff
+*.img
+*.vrt
+*.ovr
