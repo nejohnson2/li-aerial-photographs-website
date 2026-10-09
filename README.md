@@ -86,6 +86,103 @@ can take an hour or more over USB.
 - Frontend is vanilla JS + Leaflet 1.9 (CDN); all state comes from
   `/api/catalog` and `/api/footprints`.
 
+## Porting to a new machine
+
+The site has three moving parts: this repository (code), the **data volume**
+(the LI-Aerial-Photography directory — ~45 GB of scans, read-only), and the
+**generated artifacts** (`data/` + `cache/`, rebuildable but slow to rebuild).
+
+### 1. Prerequisites on the new machine
+
+- Python 3.11+
+- GDAL command-line tools (`brew install gdal` on macOS,
+  `apt install gdal-bin` on Debian/Ubuntu)
+- `make`
+- Access to the data volume (local disk, or a network mount). For a network
+  mount, configure it to mount automatically at boot (fstab/autofs) — the
+  server reads from it lazily, so a mount that disappears degrades deep-zoom
+  tiles to upscaled overviews until it returns.
+
+### 2. Install
+
+```sh
+git clone <this repo> && cd li-aerial-photographs-website
+make setup                        # creates .venv, installs pinned deps
+cp .env.example .env              # then set DATA_ROOT to the data volume path
+```
+
+### 3. Generated artifacts: copy or rebuild
+
+Fastest: copy `data/` and `cache/` from the old machine (rsync/scp). They are
+portable **except** `cache/mosaics/*.vrt`, which embed absolute paths to the
+data volume. If the volume mounts at a different path on the new machine,
+rebuild just the mosaics:
+
+```sh
+rm -rf cache/mosaics
+make overviews overviews-fine     # ~1-2 h, reads the full archive once
+```
+
+(`cache/tiles/`, `cache/thumbs/`, `data/catalog.json`, `data/footprints.geojson`
+contain no absolute paths and copy cleanly.)
+
+To rebuild everything from scratch instead:
+
+```sh
+make catalog          # ~5 min  — catalog + footprints from metadata/rasters
+make thumbnails       # ~15 min — 721 thumbnails
+make overviews        # ~30 min — local VRT copies + coarse overviews
+make overviews-fine   # ~1 h    — fine levels for fast mid-zoom tiles
+```
+
+### 4. Verify
+
+```sh
+make serve            # dev server on http://127.0.0.1:5050
+```
+
+Check: map shows imagery at low **and** high zoom (high zoom exercises the
+data volume), an address search returns frames, and the log shows no
+"base rasters unreachable" warnings.
+
+### 5. Exposing to the internet
+
+**Never expose `make serve`** — it runs Flask's debug server, whose
+interactive debugger allows remote code execution. For production:
+
+```sh
+make serve-prod       # gunicorn on 127.0.0.1:5050, debug off
+```
+
+Then put a reverse proxy in front for HTTPS and buffering — e.g. Caddy
+(automatic HTTPS):
+
+```
+# /etc/caddy/Caddyfile
+aerials.example.edu {
+    reverse_proxy 127.0.0.1:5050
+}
+```
+
+or nginx + certbot with a standard `proxy_pass http://127.0.0.1:5050;` block.
+Run gunicorn under a process manager (systemd unit, or `launchd` on macOS) so
+it restarts on boot; make the unit depend on the data-volume mount.
+
+Notes for public deployment:
+
+- `FLASK_DEBUG` in `.env` only affects `make serve`; gunicorn never enables it.
+- The app only reads the data volume and only writes inside `data/` and
+  `cache/` — run it as an unprivileged user.
+- There are no secrets anywhere in the stack (the Census geocoder needs no
+  key); `.env` holds only paths and the port.
+- The basemap uses Google's satellite tile endpoint directly, which is not
+  formally licensed for third-party sites. For a public deployment consider
+  switching the basemap in `static/js/map.js` to Esri World Imagery
+  (`https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}`).
+- The first visitors to an area pay the tile-render cost; `cache/tiles/`
+  grows and the site gets faster permanently. If you want to pre-warm, browse
+  the island at z10–14 once, or script requests against `/tiles/...`.
+
 ## Known limitations (proof of concept)
 
 - Footprints are WGS84 bounding boxes of each georeferenced raster, so rotated

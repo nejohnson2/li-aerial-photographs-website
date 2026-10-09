@@ -1,4 +1,4 @@
-.PHONY: setup catalog thumbnails overviews all serve clean
+.PHONY: setup catalog thumbnails overviews overviews-fine all serve serve-prod clean
 
 VENV = .venv/bin
 -include .env
@@ -46,6 +46,12 @@ all: catalog thumbnails
 
 serve:
 	$(VENV)/python app.py
+
+# Production server: no debug mode, one worker (the tile-render semaphore is
+# per-process), threaded. Put a reverse proxy with HTTPS in front of it.
+serve-prod:
+	$(VENV)/gunicorn --workers 1 --threads 16 --timeout 120 \
+		--bind 127.0.0.1:$${PORT:-5050} app:app
 
 clean:
 	rm -rf data cache
